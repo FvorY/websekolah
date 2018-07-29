@@ -1,0 +1,372 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\d_pekerja_mutation;
+use Illuminate\Http\Request;
+
+use App\Http\Requests;
+
+use App\d_mitra_pekerja;
+
+use App\d_pekerja;
+use App\surat;
+use Redirect;
+use App\d_mitra_contract;
+
+use Yajra\Datatables\Datatables;
+use App\Http\Controllers\mitraContractController;
+use App\Http\Controllers\pdmController;
+
+use Validator;
+use Carbon\carbon;
+
+use DB;
+
+class mitraPekerjaController extends Controller
+{
+
+    public function index()
+    {
+        /*$identitas = [
+          3, 1, 5, 2, 6
+        ];*/
+
+        /*
+              for ($i = 0; $i <= 10; $i++){
+                if ($i % 2 ==1) {
+                  echo $i." adalah ganjil <br>";
+                }else if($i % 2 ==0) {
+                  echo $i." adalah genap <br>";
+                }
+                if ($i == 5){
+              break;
+              }
+              }
+              dd();*/
+
+        return view('mitra-pekerja.index');
+
+    }
+
+    public function data()
+    {
+
+
+//select * from d_mitra_contract join d_mitra_pekerja
+//on d_mitra_pekerja.mp_contract=d_mitra_contract.mc_contractid
+//and d_mitra_pekerja.mp_mitra=d_mitra_contract.mc_mitra
+//and d_mitra_pekerja.mp_comp=d_mitra_contract.mc_comp
+//join d_mitra on d_mitra.m_id=d_mitra_pekerja.mp_mitra
+//join d_comp on d_comp.c_id=d_mitra_pekerja.mp_comp
+
+        DB::statement(DB::raw('set @rownum=0'));
+        $mc = DB::table('d_mitra_contract')
+            ->join('d_mitra', 'd_mitra.m_id', '=', 'd_mitra_contract.mc_mitra')
+            ->join('d_comp', 'd_comp.c_id', '=', 'd_mitra_contract.mc_comp')
+            ->join('d_mitra_divisi', 'd_mitra_contract.mc_divisi', '=', 'd_mitra_divisi.md_id')
+            ->join('d_mitra_pekerja', function ($join) {
+                $join->on('d_mitra_pekerja.mp_contract', '=', 'd_mitra_contract.mc_contractid');
+                $join->on('d_mitra_pekerja.mp_mitra', '=', 'd_mitra_contract.mc_mitra');
+                $join->on('d_mitra_pekerja.mp_comp', '=', 'd_mitra_contract.mc_comp');
+            })
+            ->select('d_mitra_contract.mc_mitra'
+                , 'd_mitra_contract.mc_contractid'
+                , 'd_mitra_contract.mc_no'
+                , 'd_mitra_contract.mc_divisi'
+                , 'd_mitra_divisi.md_name'
+                , 'd_mitra_contract.mc_date'
+                , 'd_mitra_contract.mc_expired'
+                , 'd_mitra_contract.mc_need'
+                , 'd_mitra_contract.mc_fulfilled'
+                , 'd_mitra_divisi.md_id'
+                , 'd_mitra.m_name'
+                , 'd_comp.c_name',
+                DB::raw('@rownum  := @rownum  + 1 AS number')
+            )
+            ->groupBy('mc_no')
+            ->orderBy('d_mitra_contract.mc_date', 'DESC')
+            ->get();
+        $mc = collect($mc);
+
+        return Datatables::of($mc)
+            ->editColumn('mc_date', function ($mc) {
+                return $mc->mc_date ? with(new Carbon($mc->mc_date))->format('d-m-Y') : '';
+
+            })
+            ->editColumn('mc_expired', function ($mc) {
+                return $mc->mc_expired ? with(new Carbon($mc->mc_expired))->format('d-m-Y') : '';
+
+            })
+            ->addColumn('action', function ($mc) {
+                return ' <div class="dropdown">                                
+                                            <button class="btn btn-primary btn-flat btn-xs dropdown-toggle" type="button" id="dropdownMenu1" data-toggle="dropdown" aria-haspopup="true" aria-expanded="true">
+                                                Kelola
+                                                <span class="caret"></span>
+                                            </button>
+                                            <ul class="dropdown-menu" aria-labelled by="dropdownMenu1">
+                                                <li><a href="data-pekerja-mitra/' . $mc->mc_mitra . '/' . $mc->mc_contractid . '/edit" ><i class="fa fa-pencil" aria-hidden="true"></i>Edit Data</a></li>
+                                                <li role="separator" class="divider"></li>                                                                                                                                                                         
+                                                <li><a class="btn-delete" onclick="hapus(' . $mc->mc_mitra . ',' . $mc->mc_contractid . ')"></i>Hapus Data</a></li>                                                
+                                            </ul>
+                                        </div>';
+            })
+            ->make(true);
+
+    }
+
+    public function tambah()
+    {
+
+        $mitra_contract = d_mitra_contract::where('mc_fulfilled', '<', DB::raw('mc_need'))->get();
+        $pekerja = d_pekerja::leftjoin('d_mitra_pekerja', 'd_pekerja.p_id', '=', 'd_mitra_pekerja.mp_pekerja')
+            ->where('mp_pekerja', '=', null)
+            ->get();
+        $update_mitra_contract = DB::table('d_mitra_contract')->get();
+        return view('mitra-pekerja.formTambah', compact('pekerja1', 'update_mitra_contract', 'pekerja', 'mitra_contract'));
+    }
+
+    public function simpan(Request $request)
+    {
+
+        DB::beginTransaction();
+        try {
+
+            $rules = [
+                "kontrak" => 'required',
+                //"Jumlah_Pekerja" => 'required|date',
+                "totalPekerja" => "required",
+
+            ];
+
+            $validator = Validator::make($request->all(), $rules);
+
+            if ($validator->fails()) {
+                return response()->json([
+                    'status' => 'gagal',
+                    'data' => $validator->errors()->toArray()
+                ]);
+            }
+            $cekSelected = count($request->pilih);
+            if ($cekSelected == 0) {
+                return response()->json([
+                    'status' => 'gagal',
+                    'data' => 'Belum ada detail pekerja yang di masukkan.'
+                ]);
+            }
+
+            $con = DB::table('d_mitra_contract')
+                ->select('mc_contractid', 'mc_no')
+                ->where('mc_contractid', '=', $request->mc_contractid)
+                ->get();
+
+            $data = [];
+            $mutasi = [];
+            $id_mitra_pekerja = d_mitra_pekerja::max('mp_id');
+            $id_mitra_pekerja = $id_mitra_pekerja + 1;
+            $totalPekerja = 0;
+            for ($index = 0; $index < count($request->chek); $index++) {
+                if ($request->chek[$index] == '1') {
+                    $temp = array(
+                        'mp_id' => $id_mitra_pekerja + $index,
+                        'mp_comp' => $request->perusahaan,
+                        'mp_pekerja' => $request->pekerja[$index],
+                        'mp_mitra' => $request->mitra,
+                        'mp_divisi' => $request->divisi,
+                        'mp_mitra_nik' => $request->mitra_nik[$index],
+                        'mp_selection_date' => date('Y-m-d', strtotime($request->mp_selection_date)),
+                        'mp_workin_date' => date('Y-m-d', strtotime($request->mp_workin_date)),
+                        'mp_contract' => $con[0]->mc_contractid,
+                        /*'mp_no'=>$con[0]->kontrak,*/
+                        'mp_state' => 1
+                    );
+                    d_pekerja::where('p_id', '=', $request->pekerja[$index])->update(array('p_state' => 1, 'p_note' => 'Seleksi'));
+
+                    $pm_detail = DB::table('d_pekerja_mutation')
+                        ->where('pm_pekerja', '=', $request->pekerja[$index])
+                        ->max('pm_detailid');
+                    $tempMutasi = array(
+                        'pm_pekerja' => $request->pekerja[$index],
+                        'pm_detailid' => $pm_detail + 1,
+                        'pm_date' => Carbon::now('Asia/Jakarta'),
+                        'pm_mitra' => $request->mitra,
+                        'pm_divisi' => $request->divisi,
+                        'pm_detail' => 'Seleksi',
+                        'pm_from' => null,
+                        'pm_status' => 'Aktif'
+                    );
+                    array_push($mutasi, $tempMutasi);
+                    $totalPekerja++;
+                    array_push($data, $temp);
+                }
+            }
+
+            d_mitra_pekerja::insert($data);
+            d_pekerja_mutation::insert($mutasi);
+            $update_mitra_contract = d_mitra_contract::
+            where('mc_mitra', $request->mitra)->where('mc_contractid', $request->mc_contractid);
+            $update_mitra_contract->update([
+                'mc_fulfilled' => $totalPekerja,
+                'mc_status_mp' => '1',
+
+            ]);
+
+            DB::commit();
+            return response()->json([
+                'status' => 'berhasil'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollback();
+            return response()->json([
+                'status' => 'gagal',
+                'data' => $e
+            ]);
+        }
+
+    }
+
+    public function edit($mitra, $kontrak)
+    {
+
+        $update_mitra_contract = DB::table('d_mitra_contract')
+            ->join('d_mitra', 'd_mitra.m_id', '=', 'd_mitra_contract.mc_mitra')
+            ->join('d_comp', 'd_comp.c_id', '=', 'd_mitra_contract.mc_comp')
+            ->join('d_mitra_pekerja', 'd_mitra_contract.mc_contractid', '=', 'd_mitra_pekerja.mp_contract')
+            ->join('d_mitra_divisi', 'd_mitra_contract.mc_divisi', '=', 'd_mitra_divisi.md_id')
+            ->select('d_mitra_contract.mc_mitra'
+                , 'd_mitra_contract.mc_contractid'
+                , 'd_mitra_contract.mc_no'
+                , 'd_mitra_contract.mc_date'
+                , 'd_mitra_contract.mc_expired'
+                , 'd_mitra_contract.mc_need'
+                , 'd_mitra_contract.mc_fulfilled'
+                , 'd_mitra_contract.mc_comp'
+                , 'd_mitra_contract.mc_status_mp'
+                , 'd_mitra.m_id'
+                , 'd_mitra_divisi.md_id'
+                , 'd_comp.c_id'
+                , 'd_comp.c_name'
+                , 'd_mitra_pekerja.mp_no'
+                , 'd_mitra_pekerja.mp_pekerja'
+            )
+            ->where('d_mitra_contract.mc_mitra', $mitra)
+            ->where('d_mitra_contract.mc_contractid', $kontrak)
+            ->first();
+        $update_mitra_pekerja = d_mitra_pekerja::
+        where('mp_comp', $update_mitra_contract->mc_comp)
+            ->where('mp_mitra', $update_mitra_contract->mc_mitra)
+            /*  ->where('mp_workin_date',$update_mitra_pekerja->mp_workin_date)
+              ->where('mp_selection_date',$update_mitra_pekerja->mp_selection_date)*/
+            ->where('mp_contract', $update_mitra_contract->mc_contractid)
+            ->where('mp_contract', $update_mitra_contract->mc_status_mp)
+            ->get();
+
+        $pekerja = DB::table('d_pekerja')
+            ->leftjoin('d_mitra_pekerja', 'd_mitra_pekerja.mp_pekerja', '=', 'd_pekerja.p_id')
+            ->where('d_mitra_pekerja.mp_contract', '=', $update_mitra_contract->mc_contractid)
+            ->where('d_mitra_pekerja.mp_mitra', '=', $update_mitra_contract->mc_mitra);
+
+        $asw = DB::table('d_pekerja')
+            ->leftjoin('d_mitra_pekerja', 'd_mitra_pekerja.mp_pekerja', '=', 'd_pekerja.p_id')
+            ->where('mp_pekerja', '=', null);
+
+        $anjp = $pekerja->union($asw)
+            ->groupBy('p_name')
+            ->get();
+
+        /*  $mitra_contract=d_mitra_contract::get();*/
+
+        $d_datedate = DB::table('d_mitra_pekerja')
+            ->join('d_pekerja', 'd_mitra_pekerja.mp_pekerja', '=', 'd_pekerja.p_id')
+            ->where('mp_contract', '=', $kontrak)
+            ->groupBy('mp_selection_date')
+            ->orderby('mp_contract')
+            ->get();
+        //dd($anjp);
+        return view('mitra-pekerja.formEdit', compact('mitra_contract', 'anjp', 'asw', 'a', 'd_datedate', 'd_mitra_pekerja', 'update_mitra_contract', 'update_mitra_pekerja', 'pekerja'));
+    }
+
+    public function perbarui(Request $request, $mitra, $mc_contractid)
+    {
+
+        for ($i = 0; $i < count($request->chek); $i++) {
+            if ($request->chek[$i] == "") {
+
+            } else {
+                $anjp = DB::table('d_mitra_pekerja')->where('mp_pekerja', '=', $request->pekerja[$i])->delete();
+
+            }
+        }
+
+        for ($a = 0; $a < count($request->chek); $a++) {
+            if ($request->chek[$a] == "") {
+
+                $anjp = DB::table('d_mitra_pekerja')
+                    ->where('mp_pekerja', '=', $request->pekerja[$a])
+                    ->delete();
+            }
+
+        }
+        $a = new mitraContractController();
+        $a->hapus($mitra, $mc_contractid);
+
+
+        $b = new mitraContractController();
+        $b->simpan($request);
+
+        $this->simpan($request);
+        return response()->json([
+            'status' => 'berhasil',
+        ]);
+
+
+    }
+
+
+    public function mitraContrak($mitra, $kontrak)
+    {
+
+        $mc = DB::table('d_mitra_contract')
+            ->join('d_mitra', 'd_mitra.m_id', '=', 'd_mitra_contract.mc_mitra')
+            ->join('d_comp', 'd_comp.c_id', '=', 'd_mitra_contract.mc_comp')
+            ->join('d_mitra_divisi', 'd_mitra_contract.mc_divisi', '=', 'd_mitra_divisi.md_id')
+            ->select('d_mitra_contract.mc_mitra'
+                , 'd_mitra_contract.mc_contractid'
+                , 'd_mitra_contract.mc_no'
+                , 'd_mitra_contract.mc_divisi'
+                , 'd_mitra_contract.mc_date'
+                , 'd_mitra_contract.mc_expired'
+                , 'd_mitra_contract.mc_need'
+                , 'd_mitra_contract.mc_fulfilled'
+                , 'd_mitra_contract.mc_comp'
+                , 'd_mitra.m_name'
+                , 'd_mitra_divisi.md_name'
+                , 'd_comp.c_name'
+            )
+            ->where('d_mitra_contract.mc_mitra', $mitra)
+            ->where('d_mitra_contract.mc_contractid', $kontrak)
+            ->first();
+
+        $mc->mc_date = date('d-F-Y', strtotime($mc->mc_date));
+        $mc->mc_expired = date('d-F-Y', strtotime($mc->mc_expired));
+        if (count($mc) != 0) {
+            return response()->json([
+                'status' => 'berhasil',
+                'data' => $mc,
+            ]);
+        }
+        if (count($mc) == 0) {
+            return response()->json([
+                'status' => 'berhasil',
+                'data' => 'Data Kosong',
+            ]);
+        }
+
+
+    }
+    /* public function hapus($mp_pekerja){
+
+       $osas = new pdmController();
+             $osas->hapus($mp_pekerja);
+     }*/
+}
